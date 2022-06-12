@@ -1,0 +1,423 @@
+---
+title: "Statistique bayésienne"
+subtitle: "Executive Master Statistics and Big Data"
+author: "Yannick Le Pen"
+date: "06/06/2022"
+output: 
+    pdf_document:
+      number_sections: yes
+      toc: yes
+      toc_depth: 3
+      df_print: kable
+      extra_dependencies: ["flafter"]
+      fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\newpage
+
+# Introduction
+Nous voulons expliquer le nombre de points (variable Barre) nécessaires pour obtenir une mutation dans un lycée de l'Académie de Versailles. Nous disposons de variables de plusieurs types :
+
+* ville
+* établissement
+* effectifs présents en séries l, es et s
+* taux bruts de réussite en séries l, es et s
+* effectifs en seconde et en première
+* taux d'accès brut et attendu au bac en seconde et première
+* taux brut et attendu de réussite pour toutes les séries
+
+
+# Données
+
+```{r include=FALSE,cache=TRUE}
+rm(list = ls())
+d0<-read.csv("mutations2.csv")
+str(d0)
+d<-d0[-c(1,4)]
+```
+
+
+Nous représentons les statistiques descriptives des variables numériques. Les valeurs de la variable Barre sont d'un ordre de grandeur plus elevé que les autres variables, dont beaucoup sont des taux. Nous décidons de tranformer la variable Barre en prenant son logarithme. Cela change l'interprétation des coefficients. 
+```{r echo=FALSE,cache=TRUE}
+statdes<-summary(d[-c(1:3)])
+knitr::kable(statdes[,1:4],"latex")
+knitr::kable(statdes[,5:7],"latex")
+knitr::kable(statdes[,8:10],"latex")
+knitr::kable(statdes[,11:14],"latex")
+knitr::kable(statdes[,15:17],"latex")
+knitr::kable(statdes[,18],"latex")
+```
+```{r echo=FALSE,cache=TRUE}
+library(corrplot)
+d$Barre<-log(d$Barre)
+d_num = d[-c(1:3)]
+corrplot(cor(d_num))
+```
+Nous analysons les corrélations entre les variables numériques. La variable Barre (en logarithme) est positivement corrélée avec les autres variables mais, d'après le graphique, le niveau des corrélations se situe autour de 0.2. Il n'y a donc pas de variable qui serait fortement corrélé à Barre. Nous pouvons remarquer différents blocs dans l'ensemble des corrélations :
+
+* Les effectifs présents en séries l, es et l sont corrélés logiquement avec les effectifs en seconde,
+* Les taux de réussite bruts et attendus sont corrélés avec les taux d'accès bruts et attendus
+* Les taux de réussite bruts sont corrélés entre eux
+* Les taux d'accès et de réussite sont corrélés entre eux
+
+Dans chaque cas, les corrélations sont positives et assez élevées (entre 0.6 et 0.8). Nous pouvons en déduire que des variables sont redondantes dans l'explication de Barre.
+
+\newpage
+
+# Régression linéaire initiale
+
+Nous effectuons une première régression linéaire. Nous régressons la variable Barre (en logarithme) sur deux variables représentatives de nos données :
+
+* effectif_de_seconde,
+* taux_reussite_attendu_total_series.
+
+Nous nous plaçons dans le cas où les priors des coefficients des regresseurs suivent une loi normale et celui de la variance du résidu une loi Gamma, ces deux lois étant indépendantes. La fonction mcmcregress du package MCMCpack utilise l'algorithme Gibbs sampler pour simuler la distribution a posteriori. Nous conservons les valeurs par défaut du nombre d'itération soit 1000 pour le burnin et 10000 pour le nombre d'itérations après le burnin. Afin de pouvoir par la suite calculer les facteurs de Bayes, nous spécifions des priors. Dans ces priors nous supposons que la moyenne des coefficients de la régression est égale à 0 et 
+
+```{r echo=FALSE,cache=TRUE}
+library(MCMCpack)
+suppressMessages(library(MCMCpack))
+reg0 <- MCMCregress(Barre~effectif_de_seconde+taux_reussite_attendu_total_series, data=d, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg0)
+par(mar=c(2,1,2,1))
+plot(reg0)
+
+```
+Les distributions des coefficients a posteriori montrent que la moyenne a posteriori des deux coefficients est positive, avec un ordre de grandeur bien plus elevé pour taux_reussite_attendu_total_series. Si nous comparons les moyennes a posteriori avec les écarts types correspondants, nous voyons l'écart type pour effectif_de_seconde est nettement plus elevé que la moyenne a posteriori, ce qui nous conduit à considerer cette variable comme peu significative. Dans le cas du taux_reussite_attendu_total_series, l'écart type estimé nettement 18 fois plus petit, ce qui est favorable à la significativité de cette variable. Ces constats sont confirmés par l'étude des quartiles qui sont tous positif pour taux_reussite_attendu_total_series et de signes négatifs, au moins jusqu'au quantile d'ordre 25%, pour effectif_de_seconde et positif ensuite. L'étude des densités a posteriori montrent que la densité de effectif_de_seconde est presque centrée en 0. La densité de taux_de_reussite_attendu est centrée autour de 0.3 et nettement au-dessus de zéro.
+
+Les résultats précédents sont conditionnés à la précision de l'estimation de la distribution a posteriori. Concernant la précision des l'estimation de la moyenne a posteriori des coefficients, nous observons que les écarts types mesurant cette précision, reportés dans Naive SE et Time-Series SE sont suffisamment petits (environ 100 plus petits que les écarts types des distributions a posteriori) pour que la qualité de l'estimation soit jugée comme suffisante.
+
+Les graphiques ``trace'' des chaines MCMC montrent que les trajectoires de ces chaines balayent bien l'espace des valeurs possibles des coefficients.
+
+Les diagnostics relatifs au nombre d'itérations minimum montrent que les paramètres retenus pour la taille du burnin et l'estimation de la distribution a posteriori sont suffisants.
+
+
+
+```{r echo=FALSE,cache=TRUE}
+raftery.diag(reg0, q=0.025,r=0.005)
+effectiveSize(reg0)
+```
+\newpage
+
+# Recherche d'une meilleure spécification
+
+## Préselection des variables 
+
+Nous commençons par une estimation de la régression de la variable Barre (en logarithme) sur toutes les autres variables numériques simultanément. Nous représentons juste les densités a posteriori des coefficients.
+```{r echo=FALSE, cache=TRUE}
+
+regini <- MCMCregress(Barre~.,
+                    data=d_num, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+#summary(regini)
+
+par(mar=c(2,1,2,1))
+plot(regini)
+
+```
+Les distributions a posteriori montrent que :
+
+
+* Les effectifs présents par série et les effectifs en seconde et en première ont tous des distributions a posteriori qui sont centrées autour de 0.
+* La variable taux_acces_brut_seconde_bac a un effet positif.
+* Les variables taux_acces_attendu_seconde_bac et taux_acces_brut_premiere_bac ont un effet négatif.
+* La variable taux\_ acces\_attendu\_première\_bac a un effet positif et significatif.
+* Les deux variables taux_reussite brut et attendu totaux ou par série n'ont apparemment pas d'effet lorqu'elles sont considérées isolément. 
+* Ce constat est confirmé par l'étude des quantiles et du graphique de la distribution a posteriori. Nous observons que pour ``taux_acces_attendu_première_bac'' seulement, tous les quantiles sont positifs.
+
+
+Si nous régressons la variable Barre sur chaque variable numérique. Les distributions a posteriori (non représentées par souci de place) montrent que les effectifs présents comme les effectifs en seconde et en première sont assez peu significatif. La distribution a posteriori des coefficients de ces variables est très concentrée autour de 0. Nous décidons donc des les exclure. Nous remarquons par contre que la distribution des variables des taux d'accès et des taux de réussite attendu montrent que les coefficients sont très probablement supérieurs à 0.
+
+```{r include=FALSE,cache=TRUE}
+library(MCMCpack)
+suppressMessages(library(MCMCpack))
+for (i in 5:21) {
+reg <- MCMCregress(Barre~d[,i], data=d, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+#par(mar=c(2,1,2,1))
+plot(reg)
+}
+```
+
+\newpage
+## Recherche d'une spécification
+
+### Regression 1 
+On considère une première régression sur les taux d'accès au bac, en première ou en seconde, brut ou attendu, soit les variables qui sont apparues comme les plus significatives.
+
+```{r echo=FALSE,cache=TRUE}
+reg1 <- MCMCregress(Barre~taux_acces_brut_seconde_bac+taux_acces_attendu_seconde_bac+taux_acces_brut_premiere_bac+taux_acces_attendu_premiere_bac, data=d,mcmc=10000, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg1)
+par(mar=c(2,1,2,1))
+plot(reg1)
+raftery.diag(reg1, q=0.025,r=0.005)
+effectiveSize(reg1)
+```
+
+Les résultats des estimations permettent de tirer les conclusions suivantes:
+
+* la variable taux_acces\_brut\_premiere\_bac possède une distribution a posteriori nettement au dessus de zero. On peut donc conclure que l'effet de cette variable est significativement positif.
+* la variable taux_acces_brut_seconde_bac a une distribution a posteriori centrée autour de 0
+* les deux autres variables ont plutôt un effet négatif même si un petite partie de leur distribution se situe au-dessus de 0.
+
+Les différents diagnostics sur la précision de l'estimation et l'algorithme de simulation ne révèlent pas de problème particulier.
+
+### Régression 2
+Nous estimons le modèle en excluant taux_acces_brut_seconde. Les résultats pour les autres variables ne sont pas très différents de ceux obtenus précédemment. 
+
+```{r echo=FALSE,cache=TRUE}
+reg2 <- MCMCregress(Barre~taux_acces_attendu_seconde_bac+taux_acces_brut_premiere_bac+taux_acces_attendu_premiere_bac, data=d,mcmc=10000, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg2)
+par(mar=c(2,1,2,1))
+plot(reg2)
+raftery.diag(reg2)
+effectiveSize(reg2)
+```
+
+### Régression 3
+Nous excluons maintenant taux_acces_attendu_seconde_bac, ce qui n'a pas d'effet sur la distribution a posteriori du coefficient des deux autres variables.
+```{r echo=FALSE,cache=TRUE}
+reg3 <- MCMCregress(Barre~taux_acces_brut_premiere_bac+taux_acces_attendu_premiere_bac, data=d,mcmc=10000, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg3)
+par(mar=c(2,1,2,1))
+plot(reg3)
+raftery.diag(reg3)
+effectiveSize(reg3)
+```
+
+## Regression finale
+Nous considérons une dernière régression sur taux_acces_attendu_première_bac uniquement. La loi a posteriori du coefficient est très nettement au-dessus de zéro avec une valeur moyenne a postériori égale à 0.04
+
+```{r echo=FALSE, cache=TRUE}
+reg4 <- MCMCregress(Barre~taux_acces_attendu_premiere_bac, data=d, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+par(mar=c(2,1,2,1))
+plot(reg4)
+summary(reg4)
+raftery.diag(reg4)
+effectiveSize(reg4)
+```
+### Comparaison des modèles par les facteurs de Bayes
+
+Afin de déterminer le modèle préféré nous calculons les facteurs de Bayes permettant de comparer les 4 dernières régressions. Les valeurs obtenues sont très nettement favorables à la dernière spécification correspondant à la régression de Barre sur taux_acces_attendu_premiere_bac.
+
+```{r echo=FALSE}
+library(MCMCpack)
+BF <-BayesFactor(reg1,reg2,reg3,reg4)
+print(BF)
+```
+## Effet des matières et des Etablissements
+
+Nous ajoutons à la regression précédente les différentes matières (reg5). Nous observons que certaines matières exercent une effet négatif indubitable sur la barre de mutation : anglais, biologie biochimie, maths...
+```{r include=FALSE,cache=TRUE}
+reg5 <- MCMCregress(Barre~taux_acces_attendu_premiere_bac+as.factor(Matiere), data=d, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg5)
+raftery.diag(reg5, q=0.025,r=0.005)
+effectiveSize(reg5)
+```
+```{r include=FALSE,cache=TRUE}
+reg6 <- MCMCregress(Barre~taux_acces_attendu_premiere_bac+as.factor(etablissement), data=d, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(reg6)
+raftery.diag(reg6, q=0.025,r=0.005)
+effectiveSize(reg6)
+```
+
+En ce qui concerne les établissements, nous n'obtenons aucun effet significatif à l'exception d'un effet positif pour le lycée Condorcet.
+
+L'étude des facteurs de Bayes conduit cependant à privilégier le modèle avec taux_acces_attendu_primaire seulement.
+```{r echo=FALSE, cache=TRUE}
+BF2 <-BayesFactor(reg4,reg5,reg6)
+print(BF2)
+```
+
+
+## Comparaison avec l'estimation par les MCO
+
+Nous estimons la régression par les MCO de la variable Barre sur taux_acces_attendu_première_bac. Nous remarquons que le coefficient estimé est significativement différent de zéro pour un risque de première espèce de 1%. Nous remarquons aussi que sa valeur est très proche de la moyenne a posteriori du coefficient obtenu par la méthode bayésienne.
+
+```{r echo=FALSE,cache=TRUE}
+
+regOLS<-lm(Barre~taux_acces_attendu_premiere_bac,data=d)
+summary(regOLS)
+
+```
+
+
+
+
+
+
+
+# Difference des conditions entre Anglais et Maths
+Nous séparons l'échantillon initial en deux sous-échantillons correspondant aux deux matières. 
+```{r, echo=FALSE,cache=TRUE}
+d_anglais=d[d$Matiere=="ANGLAIS",]
+d_maths=d[d$Matiere=="MATHS",]
+
+```
+## Barre des mutations pour l'anglais
+Nous effectuons la régression de la variable Barre sur le taux d'accès attendu première bac. La distribution a posteriori montre que l'effet de cette variables positif et ``significatif'', la moyenne du coefficient a posterio étant égale à 0.03. Nous pouvons formuler cette conclusion d'une part parce l'écart type estimé de ce coefficient est égale à 0.01 et surtout la distribution a posteriori est bien au-dessus de zéro comme le montre les quartiles et la représentation graphique de la densité. 
+
+```{r echo=FALSE,cache=TRUE}
+regAng1 <- MCMCregress(Barre~taux_acces_attendu_premiere_bac, data=d_anglais, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(regAng1)
+par(mar=c(2,1,2,1))
+plot(regAng1)
+raftery.diag(regAng1, q=0.025,r=0.005)
+effectiveSize(regAng1)
+```
+
+## Barre des mutations pour les maths
+
+Nous estimons la même régression pour le sous-échantillon correspondant à la matière Math. Nous obtenons un moyenne a posteriori de 0.04 pour le coefficient du taux d'accès attendu. Les quantiles comme la représentation graphique de la densité de la distribution a posteriori du coefficient montre sont situé à droite de ceux obtenu pour la matière Anglais. Nous pouvons donc en déduire raisonnablement que l'effet du taux d'accès est plus important en math qu'en anglais.
+
+```{r echo=FALSE,cache=TRUE}
+regMaths1 <- MCMCregress(Barre~taux_acces_attendu_premiere_bac, data=d_maths, b0=0, B0=0.1,c0=1,d0=0.2,marginal.likelihood = "Laplace")
+summary(regMaths1)
+par(mar=c(2,1,2,1))
+plot(regMaths1)
+raftery.diag(regMaths1, q=0.025,r=0.005)
+effectiveSize(regMaths1)
+```
+
+\newpage
+
+# Partie II Loi de Pareto
+
+## Loi de Pareto
+Nous représentons des distributions simulées de la loi de Pareto $Z \sim Pareto(m,\alpha)$ pour $m=21$ et $\alpha=1,2,3$.
+```{r,echo=FALSE,cache=TRUE}
+suppressMessages(library(EnvStats))
+library(EnvStats)
+library(KernSmooth)
+library(ggplot2)
+
+n<-1000
+x<-rpareto(n,21,1)
+
+
+a=c(1,2,3)
+h=c(90,20,10)
+
+res =list()
+
+
+for(i in 1:length(a))
+{
+x<-rpareto(n,21,a[i])  
+
+res[[i]] = density(x,bw=h[i],kernel="gaussian")}
+
+par(mfrow=c(2,2))
+
+for(i in 1:length(a))
+{
+plot(res[[i]]$x, res[[i]]$y,type="l",xlab="",ylab="",main=a[[i]],col="blue")
+}
+```
+A mesure que le paramètre $alpha$ augmente, l'ensemble des valeurs de *z* pour lesquelles la densité est différente de zéro se réduit.
+
+Nous pouvons comparer ces différentes distribution à la densité estimée de la variable Barre. La ressemblance justifie de choisir une loi de Pareto. Nous pouvons aussi anticiper que la valeur du paramètre $\alpha$ doit être inférieure à 1.
+
+```{r echo=FALSE,cache=TRUE}
+dens_barre =density(d0$Barre,bw=50,kernel="gaussian")
+plot(dens_barre$x,dens_barre$y,type="l",xlab="",ylab="",main="density Barre",col="blue")
+#hist(d0$Barre,main="Histogramme de Barre")
+``` 
+## Loi a priori pour $\alpha$
+Dans la mesure où le paramètre $alpha$ doit être strictement supérieur à 0, un choix possible serait de prendre une loi exponentielle $\alpha \sim \mathcal{E}(\lambda)$. Le prior du paramètre $alpha$ s'écrirait $f(\alpha)=\lambda e^{-\lambda \alpha}$. Nous en déduisons que l'espérance de $\alpha$ a priori est $E(\alpha)=\frac{1}{\lambda}$ et sa variance $V(\alpha)=\frac{1}{\lambda^{2}}$
+
+
+## Loi a posteriori du paramètre $\alpha$
+La loi a posteriori est construite à partir du produit de la log-vraisemblance de l'échantillon et du prior :
+
+
+$$\prod_{i=1}^{N} \left( \alpha \frac{m^{\alpha}}{z_{i}^{\alpha+1}} \mathbb{1}_{z_{i}>m}\right)\times\lambda e^{-\lambda \alpha}
+= \alpha^{N}\frac{m^{N}}{\left( \prod_{i=1}^{N}z_{_{i}}\right)^{\alpha+1}}\lambda e^{-\lambda \alpha}\propto  \frac{e^{Nln(\alpha)-\lambda \alpha}}{\left( \prod_{i=1}^{N}z_{_{i}}\right)^{\alpha+1}}$$
+
+On en déduit l'expression de la densité a postériori en logarithme
+$$
+Nln(\alpha)-\alpha \lambda -(\alpha+1)(\sum_{i=1}^{N}ln(z_{i}))+Nln(m)+ln(\lambda)
+$$
+
+
+## Echantillon tire de la loi a posteriori
+Dans un premier temps, on construit la fonction logfit de la densité a posteriori du paramètre $\alpha$ en logarithme.
+```{r}
+logfit <-function(alpha,z,X){
+  m=X[1]
+  lambda = X[2]
+  N<-length(z)
+  ll<-N*log(abs(alpha))-abs(alpha)*lambda-(abs(alpha)+1)*sum(log(z))+N*log(m)+log(lambda) 
+  return(ll)
+}
+
+
+```
+
+
+```{r echo=FALSE}
+
+X=c(21,1)
+
+library(MCMCpack)
+suppressMessages(library(MCMCpack))
+
+post.samp<-MCMCmetrop1R(logfit,theta.init=1,z=d0$Barre,X=X,burnin=2000,mcmc=20000,thin=1,tune=3,logfun = TRUE)
+summary(post.samp)
+plot(post.samp)
+acf(post.samp,type="correlation")
+```
+
+Les critères d'évaluation de la chaine MCMC ne semblent pas montrer de problème particulier :
+
+* le taux d'acceptation est égal à 0.37 ce qui correspond aux valeurs préconisées,
+* le graphique de la chaine de Markov montrent que l'on balaye assez bien l'espace des valeurs possibles,
+* l'autocorrelogramme montre que l'autocorrélation s'annule assez rapidement (elle est pratiquement nulle pour 10 retards). Nous pouvons en déduire que nous estimons assez bien les paramètres de la distribution a posteriori du paramètre $\alpha$.
+
+L'estimation donne une espérance a posteriori de 0.1903. L'écart type estimé est égal à 8.418.e-03. 
+Un intervalle de crédibilité à 95\% est $[0.1740, 0.2071]
+
+
+## Anglais et Mathématiques
+
+On reproduit l'analyse précédente pour l'anglais et les mathématiques. 
+```{r echo=FALSE,cache=TRUE}
+d0_anglais=d0[d0$Matiere=="ANGLAIS",]
+d0_maths=d0[d0$Matiere=="MATHS",]
+
+```
+
+### Simulation de la distibution a posteriori pour $\alpha_{anglais}$
+
+```{r echo=FALSE}
+
+X=c(21,1)
+
+
+library(MCMCpack)
+suppressMessages(library(MCMCpack))
+
+post.samp_ang<-MCMCmetrop1R(logfit,theta.init=1,z=d0_anglais$Barre,X=X,burnin=2000,mcmc=10000,thin=1,tune=2,logfun = TRUE)
+summary(post.samp_ang)
+par(mar=c(2,1,2,1))
+plot(post.samp_ang)
+acf(post.samp_ang,type="correlation",main="Autocorrelation chaine de Markov Anglais")
+```
+
+## Simulation de la distribution a posteriori pour $\alpha_{math}$ et conclusion
+
+```{r echo=FALSE}
+
+X=c(21,1)
+
+post.samp_math<-MCMCmetrop1R(logfit,theta.init=1,z=d0_maths$Barre,X=X,burnin=2000,mcmc=10000,thin=1,tune=2,logfun = TRUE)
+summary(post.samp_math)
+plot(post.samp_math)
+acf(post.samp_math,type="correlation", main="Autocorrélation chaine de Markov Maths")
+```
+
+
+Dans les deux cas, les diagnostics concernant la chaine de Markov n'indiquent pas de problème particulier : les taux d'acceptation sont respectivement égaux à 0.4964 pour Anglais et 0.4959 pour maths. Les chaines de Markov balayent les valeurs possibles du paramètre $alpha$ et l'autocorrélation décroit assez rapidement.
+
+L'espérance estimée de la distribution a posteriori est égale à 0.1993 pour anglais et 0.2021 pour maths. Elles sont donc très proches. De plus les intervalles de crédibilité sont respectivement égaux à $[0.1505,0.2560]$ pour l'anglais et $[0.1547,0.2543]$ pour maths. Nous pouvons raisonnablement accepter l'hypothèse $\alpha_{anglais}=alpha_{maths}$.
